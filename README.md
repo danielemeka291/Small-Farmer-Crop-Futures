@@ -14,6 +14,7 @@ This Clarity smart contract facilitates crop futures trading between farmers and
 - 🤝 **Dispute Resolution**: Platform-mediated conflict resolution
 - ⭐ **Reputation System**: Dynamic farmer reputation based on delivery performance
 - 💸 **Platform Fees**: Configurable fee structure (default 2.5%)
+- 🚀 **Batch Operations**: Create/purchase multiple contracts in single transactions
 
 ## 🚀 Getting Started
 
@@ -52,7 +53,17 @@ clarinet check
     "Grade-A")        ;; quality grade
 ```
 
-#### 3. Cancel Open Contract (if needed)
+#### 3. Create Multiple Contracts (Batch)
+```clarity
+(contract-call? .Small-Farmer-Crop-Futures create-batch-contracts
+    (list
+        { crop-type: u"Corn", quantity: u1000, price-per-unit: u500000, delivery-date: u1000000, quality-grade: "Grade-A" }
+        { crop-type: u"Wheat", quantity: u800, price-per-unit: u600000, delivery-date: u1000000, quality-grade: "Grade-B" }
+    )
+)
+```
+
+#### 4. Cancel Open Contract (if needed)
 ```clarity
 (contract-call? .Small-Farmer-Crop-Futures cancel-contract u1)
 ```
@@ -68,12 +79,17 @@ clarinet check
 (contract-call? .Small-Farmer-Crop-Futures purchase-contract u1)
 ```
 
-#### 2. Confirm Delivery
+#### 2. Purchase Multiple Contracts (Batch)
+```clarity
+(contract-call? .Small-Farmer-Crop-Futures purchase-batch-contracts (list u1 u2 u3))
+```
+
+#### 3. Confirm Delivery
 ```clarity
 (contract-call? .Small-Farmer-Crop-Futures confirm-delivery u1)
 ```
 
-#### 3. Dispute if Issues Arise
+#### 4. Dispute if Issues Arise
 ```clarity
 (contract-call? .Small-Farmer-Crop-Futures dispute-delivery u1)
 ```
@@ -115,11 +131,14 @@ clarinet check
 - `get-contract-payment(contract-id)` - Get payment details
 - `get-platform-fee-rate()` - Current platform fee rate
 - `get-contract-count()` - Total contracts created
+- `get-max-batch-size()` - Current batch size limit
 
 ### Public Functions
 - `register-farmer()` - Register as a farmer
 - `create-crop-contract()` - List crop futures
-- `purchase-contract()` - Buy crop futures
+- `create-batch-contracts()` - Create multiple contracts at once
+- `purchase-contract()` - Buy crop futures  
+- `purchase-batch-contracts()` - Purchase multiple contracts at once
 - `confirm-delivery()` - Confirm crop delivery
 - `dispute-delivery()` - Raise delivery dispute
 - `resolve-dispute()` - Admin dispute resolution
@@ -167,6 +186,8 @@ npm test
 | u107 | Invalid price |
 | u108 | Already registered |
 | u109 | Not registered |
+| u110 | Batch limit exceeded |
+| u111 | Batch empty |
 
 
 

@@ -9,9 +9,12 @@
 (define-constant err-invalid-price (err u107))
 (define-constant err-already-registered (err u108))
 (define-constant err-not-registered (err u109))
+(define-constant err-batch-limit-exceeded (err u110))
+(define-constant err-batch-empty (err u111))
 
 (define-data-var contract-id-nonce uint u0)
 (define-data-var platform-fee-rate uint u250)
+(define-data-var max-batch-size uint u10)
 
 (define-map farmers
     principal
@@ -65,6 +68,148 @@
             location: location,
             reputation-score: u100,
         }))
+    )
+)
+
+(define-public (create-batch-contracts (contracts-data (list 10
+    {
+    crop-type: (string-utf8 50),
+    quantity: uint,
+    price-per-unit: uint,
+    delivery-date: uint,
+    quality-grade: (string-ascii 10),
+})))
+    (let (
+            (farmer tx-sender)
+            (contracts-count (len contracts-data))
+            (farmer-data (unwrap! (map-get? farmers farmer) err-not-registered))
+        )
+        (asserts! (get registered farmer-data) err-not-registered)
+        (asserts! (> contracts-count u0) err-batch-empty)
+        (asserts! (<= contracts-count (var-get max-batch-size))
+            err-batch-limit-exceeded
+        )
+
+        (ok (map create-single-contract-internal contracts-data))
+    )
+)
+
+(define-private (create-single-contract-internal (contract-data {
+    crop-type: (string-utf8 50),
+    quantity: uint,
+    price-per-unit: uint,
+    delivery-date: uint,
+    quality-grade: (string-ascii 10),
+}))
+    (let (
+            (farmer tx-sender)
+            (contract-id (+ (var-get contract-id-nonce) u1))
+            (quantity (get quantity contract-data))
+            (price-per-unit (get price-per-unit contract-data))
+            (total-amount (* quantity price-per-unit))
+            (current-height stacks-block-height)
+            (delivery-date (get delivery-date contract-data))
+        )
+        (asserts! (> quantity u0) contract-id)
+        (asserts! (> price-per-unit u0) contract-id)
+        (asserts! (> delivery-date current-height) contract-id)
+
+        (var-set contract-id-nonce contract-id)
+
+        (map-set crop-contracts contract-id {
+            farmer: farmer,
+            buyer: none,
+            crop-type: (get crop-type contract-data),
+            quantity: quantity,
+            price-per-unit: price-per-unit,
+            total-amount: total-amount,
+            delivery-date: delivery-date,
+            created-at: current-height,
+            status: "open",
+            escrow-amount: u0,
+            quality-grade: (get quality-grade contract-data),
+        })
+
+        (map-set contract-payments contract-id {
+            total-paid: u0,
+            farmer-paid: u0,
+            platform-fee: u0,
+            escrow-released: false,
+        })
+
+        contract-id
+    )
+)
+
+(define-public (purchase-batch-contracts (contract-ids (list 10 uint)))
+    (let (
+            (buyer tx-sender)
+            (contracts-count (len contract-ids))
+        )
+        (asserts! (> contracts-count u0) err-batch-empty)
+        (asserts! (<= contracts-count (var-get max-batch-size))
+            err-batch-limit-exceeded
+        )
+
+        (ok (map purchase-single-contract-internal contract-ids))
+    )
+)
+
+(define-private (purchase-single-contract-internal (contract-id uint))
+    (let (
+            (buyer tx-sender)
+            (contract-data (default-to {
+                farmer: tx-sender,
+                buyer: none,
+                crop-type: u"",
+                quantity: u0,
+                price-per-unit: u0,
+                total-amount: u0,
+                delivery-date: u0,
+                created-at: u0,
+                status: "invalid",
+                escrow-amount: u0,
+                quality-grade: "",
+            }
+                (map-get? crop-contracts contract-id)
+            ))
+            (payment-data (default-to {
+                total-paid: u0,
+                farmer-paid: u0,
+                platform-fee: u0,
+                escrow-released: false,
+            }
+                (map-get? contract-payments contract-id)
+            ))
+            (total-amount (get total-amount contract-data))
+            (platform-fee (/ (* total-amount (var-get platform-fee-rate)) u10000))
+        )
+        (if (and
+                (is-eq (get status contract-data) "open")
+                (is-none (get buyer contract-data))
+                (> stacks-block-height (get created-at contract-data))
+                (is-ok (stx-transfer? total-amount buyer (as-contract tx-sender)))
+            )
+            (begin
+                (map-set crop-contracts contract-id
+                    (merge contract-data {
+                        buyer: (some buyer),
+                        status: "purchased",
+                        escrow-amount: total-amount,
+                    })
+                )
+
+                (map-set contract-payments contract-id
+                    (merge payment-data {
+                        total-paid: total-amount,
+                        platform-fee: platform-fee,
+                    })
+                )
+
+                contract-id
+            )
+            u0
+        )
     )
 )
 
@@ -337,11 +482,24 @@
     (var-get contract-id-nonce)
 )
 
+(define-read-only (get-max-batch-size)
+    (var-get max-batch-size)
+)
+
 (define-public (set-platform-fee-rate (new-rate uint))
     (begin
         (asserts! (is-eq tx-sender contract-owner) err-owner-only)
         (asserts! (<= new-rate u1000) err-invalid-price)
         (var-set platform-fee-rate new-rate)
+        (ok true)
+    )
+)
+
+(define-public (set-max-batch-size (new-size uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (and (>= new-size u1) (<= new-size u20)) err-invalid-quantity)
+        (var-set max-batch-size new-size)
         (ok true)
     )
 )
