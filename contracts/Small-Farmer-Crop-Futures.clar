@@ -11,10 +11,17 @@
 (define-constant err-not-registered (err u109))
 (define-constant err-batch-limit-exceeded (err u110))
 (define-constant err-batch-empty (err u111))
+(define-constant err-invalid-coverage (err u112))
+(define-constant err-insurance-expired (err u113))
+(define-constant err-already-claimed (err u114))
+(define-constant err-no-qualifying-event (err u115))
 
 (define-data-var contract-id-nonce uint u0)
 (define-data-var platform-fee-rate uint u250)
 (define-data-var max-batch-size uint u10)
+(define-data-var insurance-policy-nonce uint u0)
+(define-data-var base-premium-rate uint u500)
+(define-data-var max-coverage-amount uint u10000000)
 
 (define-map farmers
     principal
@@ -50,6 +57,33 @@
         farmer-paid: uint,
         platform-fee: uint,
         escrow-released: bool,
+    }
+)
+
+(define-map weather-insurance-policies
+    uint
+    {
+        farmer: principal,
+        coverage-amount: uint,
+        premium-paid: uint,
+        coverage-type: (string-ascii 20),
+        threshold-value: uint,
+        start-date: uint,
+        end-date: uint,
+        created-at: uint,
+        status: (string-ascii 15),
+        payout-claimed: bool,
+    }
+)
+
+(define-map weather-events
+    uint
+    {
+        event-date: uint,
+        event-type: (string-ascii 20),
+        severity-value: uint,
+        verified: bool,
+        recorded-by: principal,
     }
 )
 
@@ -486,6 +520,38 @@
     (var-get max-batch-size)
 )
 
+(define-read-only (get-farmer-active-policies-count (farmer principal))
+    (let (
+            (policy-count (var-get insurance-policy-nonce))
+            (policy-range (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10))
+        )
+        (get count (fold check-farmer-policy-count policy-range { farmer: farmer, count: u0, max-id: policy-count }))
+    )
+)
+
+(define-private (check-farmer-policy-count (policy-id uint) (acc { farmer: principal, count: uint, max-id: uint }))
+    (let (
+            (farmer (get farmer acc))
+            (current-count (get count acc))
+            (max-id (get max-id acc))
+        )
+        (if (<= policy-id max-id)
+            (match (map-get? weather-insurance-policies policy-id)
+                policy-data 
+                    (if (and 
+                            (is-eq farmer (get farmer policy-data))
+                            (is-eq (get status policy-data) "active")
+                        )
+                        { farmer: farmer, count: (+ current-count u1), max-id: max-id }
+                        acc
+                    )
+                acc
+            )
+            acc
+        )
+    )
+)
+
 (define-public (set-platform-fee-rate (new-rate uint))
     (begin
         (asserts! (is-eq tx-sender contract-owner) err-owner-only)
@@ -500,6 +566,191 @@
         (asserts! (is-eq tx-sender contract-owner) err-owner-only)
         (asserts! (and (>= new-size u1) (<= new-size u20)) err-invalid-quantity)
         (var-set max-batch-size new-size)
+        (ok true)
+    )
+)
+
+;; Weather Insurance Module Functions
+
+(define-public (purchase-weather-insurance
+        (coverage-amount uint)
+        (coverage-type (string-ascii 20))
+        (threshold-value uint)
+        (coverage-duration uint)
+    )
+    (let (
+            (farmer tx-sender)
+            (policy-id (+ (var-get insurance-policy-nonce) u1))
+            (premium-amount (/ (* coverage-amount (var-get base-premium-rate)) u10000))
+            (current-height stacks-block-height)
+            (end-date (+ current-height coverage-duration))
+            (farmer-data (unwrap! (map-get? farmers farmer) err-not-registered))
+        )
+        (asserts! (get registered farmer-data) err-not-registered)
+        (asserts! (> coverage-amount u0) err-invalid-coverage)
+        (asserts! (<= coverage-amount (var-get max-coverage-amount)) err-invalid-coverage)
+        (asserts! (> coverage-duration u144) err-invalid-coverage)
+        (asserts! (> threshold-value u0) err-invalid-coverage)
+
+        (try! (stx-transfer? premium-amount farmer (as-contract tx-sender)))
+
+        (var-set insurance-policy-nonce policy-id)
+
+        (map-set weather-insurance-policies policy-id {
+            farmer: farmer,
+            coverage-amount: coverage-amount,
+            premium-paid: premium-amount,
+            coverage-type: coverage-type,
+            threshold-value: threshold-value,
+            start-date: current-height,
+            end-date: end-date,
+            created-at: current-height,
+            status: "active",
+            payout-claimed: false,
+        })
+
+        (ok policy-id)
+    )
+)
+
+(define-public (record-weather-event
+        (event-type (string-ascii 20))
+        (severity-value uint)
+    )
+    (let (
+            (event-id (+ (var-get insurance-policy-nonce) u1000000))
+            (current-height stacks-block-height)
+        )
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (> severity-value u0) err-invalid-coverage)
+
+        (map-set weather-events event-id {
+            event-date: current-height,
+            event-type: event-type,
+            severity-value: severity-value,
+            verified: true,
+            recorded-by: tx-sender,
+        })
+
+        (ok event-id)
+    )
+)
+
+(define-public (claim-weather-insurance
+        (policy-id uint)
+        (weather-event-id uint)
+    )
+    (let (
+            (policy-data (unwrap! (map-get? weather-insurance-policies policy-id) err-not-found))
+            (event-data (unwrap! (map-get? weather-events weather-event-id) err-not-found))
+            (farmer (get farmer policy-data))
+            (coverage-amount (get coverage-amount policy-data))
+            (threshold (get threshold-value policy-data))
+            (event-severity (get severity-value event-data))
+            (current-height stacks-block-height)
+        )
+        (asserts! (is-eq tx-sender farmer) err-unauthorized)
+        (asserts! (is-eq (get status policy-data) "active") err-insurance-expired)
+        (asserts! (not (get payout-claimed policy-data)) err-already-claimed)
+        (asserts! (>= current-height (get start-date policy-data)) err-insurance-expired)
+        (asserts! (<= current-height (get end-date policy-data)) err-insurance-expired)
+        (asserts! (get verified event-data) err-no-qualifying-event)
+        (asserts! (>= event-severity threshold) err-no-qualifying-event)
+        (asserts! (is-eq (get coverage-type policy-data) (get event-type event-data)) err-no-qualifying-event)
+        (asserts!
+            (and
+                (>= (get event-date event-data) (get start-date policy-data))
+                (<= (get event-date event-data) (get end-date policy-data))
+            )
+            err-no-qualifying-event
+        )
+
+        (let (
+                (calculated-ratio (* (/ event-severity threshold) u10000))
+                (payout-ratio (if (> calculated-ratio u10000) u10000 calculated-ratio))
+                (payout-amount (/ (* coverage-amount payout-ratio) u10000))
+            )
+            (try! (as-contract (stx-transfer? payout-amount tx-sender farmer)))
+
+            (map-set weather-insurance-policies policy-id
+                (merge policy-data {
+                    status: "claimed",
+                    payout-claimed: true,
+                })
+            )
+
+            (ok payout-amount)
+        )
+    )
+)
+
+(define-public (cancel-weather-insurance (policy-id uint))
+    (let (
+            (policy-data (unwrap! (map-get? weather-insurance-policies policy-id) err-not-found))
+            (farmer (get farmer policy-data))
+            (premium-paid (get premium-paid policy-data))
+            (current-height stacks-block-height)
+            (cancellation-fee (/ premium-paid u10))
+            (refund-amount (- premium-paid cancellation-fee))
+        )
+        (asserts! (is-eq tx-sender farmer) err-unauthorized)
+        (asserts! (is-eq (get status policy-data) "active") err-insurance-expired)
+        (asserts! (not (get payout-claimed policy-data)) err-already-claimed)
+        (asserts! (< current-height (+ (get start-date policy-data) u72)) err-insurance-expired)
+
+        (try! (as-contract (stx-transfer? refund-amount tx-sender farmer)))
+        (try! (as-contract (stx-transfer? cancellation-fee tx-sender contract-owner)))
+
+        (map-set weather-insurance-policies policy-id
+            (merge policy-data { status: "cancelled" })
+        )
+
+        (ok refund-amount)
+    )
+)
+
+;; Weather Insurance Read-Only Functions
+
+(define-read-only (get-weather-insurance-policy (policy-id uint))
+    (map-get? weather-insurance-policies policy-id)
+)
+
+(define-read-only (get-weather-event (event-id uint))
+    (map-get? weather-events event-id)
+)
+
+(define-read-only (get-insurance-policy-count)
+    (var-get insurance-policy-nonce)
+)
+
+(define-read-only (get-base-premium-rate)
+    (var-get base-premium-rate)
+)
+
+(define-read-only (get-max-coverage-amount)
+    (var-get max-coverage-amount)
+)
+
+(define-read-only (calculate-premium (coverage-amount uint))
+    (/ (* coverage-amount (var-get base-premium-rate)) u10000)
+)
+
+;; Weather Insurance Admin Functions
+
+(define-public (set-base-premium-rate (new-rate uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (and (>= new-rate u100) (<= new-rate u2000)) err-invalid-price)
+        (var-set base-premium-rate new-rate)
+        (ok true)
+    )
+)
+
+(define-public (set-max-coverage-amount (new-max uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts! (> new-max u0) err-invalid-coverage)
+        (var-set max-coverage-amount new-max)
         (ok true)
     )
 )
