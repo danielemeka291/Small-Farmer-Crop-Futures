@@ -87,6 +87,11 @@
     }
 )
 
+(define-map weather-reporters
+    principal
+    bool
+)
+
 (define-public (register-farmer
         (farm-name (string-utf8 100))
         (location (string-utf8 100))
@@ -105,14 +110,16 @@
     )
 )
 
-(define-public (create-batch-contracts (contracts-data (list 10
+(define-public (create-batch-contracts (contracts-data (list
+    10
     {
-    crop-type: (string-utf8 50),
-    quantity: uint,
-    price-per-unit: uint,
-    delivery-date: uint,
-    quality-grade: (string-ascii 10),
-})))
+        crop-type: (string-utf8 50),
+        quantity: uint,
+        price-per-unit: uint,
+        delivery-date: uint,
+        quality-grade: (string-ascii 10),
+    }
+)))
     (let (
             (farmer tx-sender)
             (contracts-count (len contracts-data))
@@ -525,11 +532,24 @@
             (policy-count (var-get insurance-policy-nonce))
             (policy-range (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10))
         )
-        (get count (fold check-farmer-policy-count policy-range { farmer: farmer, count: u0, max-id: policy-count }))
+        (get count
+            (fold check-farmer-policy-count policy-range {
+                farmer: farmer,
+                count: u0,
+                max-id: policy-count,
+            })
+        )
     )
 )
 
-(define-private (check-farmer-policy-count (policy-id uint) (acc { farmer: principal, count: uint, max-id: uint }))
+(define-private (check-farmer-policy-count
+        (policy-id uint)
+        (acc {
+            farmer: principal,
+            count: uint,
+            max-id: uint,
+        })
+    )
     (let (
             (farmer (get farmer acc))
             (current-count (get count acc))
@@ -537,14 +557,17 @@
         )
         (if (<= policy-id max-id)
             (match (map-get? weather-insurance-policies policy-id)
-                policy-data 
-                    (if (and 
-                            (is-eq farmer (get farmer policy-data))
-                            (is-eq (get status policy-data) "active")
-                        )
-                        { farmer: farmer, count: (+ current-count u1), max-id: max-id }
-                        acc
+                policy-data (if (and
+                        (is-eq farmer (get farmer policy-data))
+                        (is-eq (get status policy-data) "active")
                     )
+                    {
+                        farmer: farmer,
+                        count: (+ current-count u1),
+                        max-id: max-id,
+                    }
+                    acc
+                )
                 acc
             )
             acc
@@ -588,7 +611,9 @@
         )
         (asserts! (get registered farmer-data) err-not-registered)
         (asserts! (> coverage-amount u0) err-invalid-coverage)
-        (asserts! (<= coverage-amount (var-get max-coverage-amount)) err-invalid-coverage)
+        (asserts! (<= coverage-amount (var-get max-coverage-amount))
+            err-invalid-coverage
+        )
         (asserts! (> coverage-duration u144) err-invalid-coverage)
         (asserts! (> threshold-value u0) err-invalid-coverage)
 
@@ -621,7 +646,10 @@
             (event-id (+ (var-get insurance-policy-nonce) u1000000))
             (current-height stacks-block-height)
         )
-        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (asserts!
+            (or (is-eq tx-sender contract-owner) (is-authorized-weather-reporter tx-sender))
+            err-owner-only
+        )
         (asserts! (> severity-value u0) err-invalid-coverage)
 
         (map-set weather-events event-id {
@@ -641,7 +669,9 @@
         (weather-event-id uint)
     )
     (let (
-            (policy-data (unwrap! (map-get? weather-insurance-policies policy-id) err-not-found))
+            (policy-data (unwrap! (map-get? weather-insurance-policies policy-id)
+                err-not-found
+            ))
             (event-data (unwrap! (map-get? weather-events weather-event-id) err-not-found))
             (farmer (get farmer policy-data))
             (coverage-amount (get coverage-amount policy-data))
@@ -652,11 +682,18 @@
         (asserts! (is-eq tx-sender farmer) err-unauthorized)
         (asserts! (is-eq (get status policy-data) "active") err-insurance-expired)
         (asserts! (not (get payout-claimed policy-data)) err-already-claimed)
-        (asserts! (>= current-height (get start-date policy-data)) err-insurance-expired)
-        (asserts! (<= current-height (get end-date policy-data)) err-insurance-expired)
+        (asserts! (>= current-height (get start-date policy-data))
+            err-insurance-expired
+        )
+        (asserts! (<= current-height (get end-date policy-data))
+            err-insurance-expired
+        )
         (asserts! (get verified event-data) err-no-qualifying-event)
         (asserts! (>= event-severity threshold) err-no-qualifying-event)
-        (asserts! (is-eq (get coverage-type policy-data) (get event-type event-data)) err-no-qualifying-event)
+        (asserts!
+            (is-eq (get coverage-type policy-data) (get event-type event-data))
+            err-no-qualifying-event
+        )
         (asserts!
             (and
                 (>= (get event-date event-data) (get start-date policy-data))
@@ -667,7 +704,10 @@
 
         (let (
                 (calculated-ratio (* (/ event-severity threshold) u10000))
-                (payout-ratio (if (> calculated-ratio u10000) u10000 calculated-ratio))
+                (payout-ratio (if (> calculated-ratio u10000)
+                    u10000
+                    calculated-ratio
+                ))
                 (payout-amount (/ (* coverage-amount payout-ratio) u10000))
             )
             (try! (as-contract (stx-transfer? payout-amount tx-sender farmer)))
@@ -686,7 +726,9 @@
 
 (define-public (cancel-weather-insurance (policy-id uint))
     (let (
-            (policy-data (unwrap! (map-get? weather-insurance-policies policy-id) err-not-found))
+            (policy-data (unwrap! (map-get? weather-insurance-policies policy-id)
+                err-not-found
+            ))
             (farmer (get farmer policy-data))
             (premium-paid (get premium-paid policy-data))
             (current-height stacks-block-height)
@@ -696,7 +738,9 @@
         (asserts! (is-eq tx-sender farmer) err-unauthorized)
         (asserts! (is-eq (get status policy-data) "active") err-insurance-expired)
         (asserts! (not (get payout-claimed policy-data)) err-already-claimed)
-        (asserts! (< current-height (+ (get start-date policy-data) u72)) err-insurance-expired)
+        (asserts! (< current-height (+ (get start-date policy-data) u72))
+            err-insurance-expired
+        )
 
         (try! (as-contract (stx-transfer? refund-amount tx-sender farmer)))
         (try! (as-contract (stx-transfer? cancellation-fee tx-sender contract-owner)))
@@ -752,5 +796,38 @@
         (asserts! (> new-max u0) err-invalid-coverage)
         (var-set max-coverage-amount new-max)
         (ok true)
+    )
+)
+
+(define-read-only (is-authorized-weather-reporter (who principal))
+    (default-to false (map-get? weather-reporters who))
+)
+
+(define-public (set-weather-reporter
+        (who principal)
+        (allowed bool)
+    )
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        (if allowed
+            (ok (map-set weather-reporters who true))
+            (ok (map-delete weather-reporters who))
+        )
+    )
+)
+
+(define-constant premium-quote-rate-num u1)
+(define-constant premium-quote-rate-den u1000)
+
+(define-read-only (quote-premium
+        (coverage uint)
+        (duration-blocks uint)
+    )
+    (let (
+            (base-amount (* coverage duration-blocks))
+            (premium-numerator (* base-amount premium-quote-rate-num))
+            (premium-amount (/ premium-numerator premium-quote-rate-den))
+        )
+        premium-amount
     )
 )
